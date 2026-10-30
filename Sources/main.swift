@@ -221,6 +221,8 @@ final class VolumeHUD {
         // Cam efekti + yarı saydam siyah zemin
         let content = NSView(frame: panel.contentView!.bounds)
         content.autoresizingMask = [.width, .height]
+        var usesGlass = false
+#if compiler(>=6.2) // NSGlassEffectView macOS 26 SDK'sı ister
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: content.bounds)
             glass.cornerRadius = 16
@@ -231,7 +233,10 @@ final class VolumeHUD {
             content.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
             glass.contentView = content
             panel.contentView = glass
-        } else {
+            usesGlass = true
+        }
+#endif
+        if !usesGlass {
             let fx = NSVisualEffectView(frame: content.bounds)
             fx.material = .hudWindow
             fx.appearance = NSAppearance(named: .darkAqua)
@@ -602,7 +607,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let isDown = ((ns.data1 & 0xFF00) >> 8) == 0xA
         // Bazı sistemlerde basma olayı gelmiyor; o durumda bırakmada işle
         let isRepeat = (ns.data1 & 0x1) != 0
-        debugLog(String(format: "TANI %.3f key=%d data1=%x", ProcessInfo.processInfo.systemUptime, key, ns.data1))
         if isRepeat { return } // sistem tekrarı gelirse yok say; tekrarı biz üretiyoruz
         if isDown { downSeen.insert(key) }
         let fire = isDown || !downSeen.contains(key)

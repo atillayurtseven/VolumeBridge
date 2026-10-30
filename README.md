@@ -4,27 +4,8 @@ Ses seviyesi kontrolü olmayan çıkış aygıtlarında (DisplayPort/HDMI monit�
 
 ## Gereksinimler
 
-- Apple Silicon Mac, macOS 14.4 veya üstü
-- macOS 26 veya üstü SDK'lı Xcode ya da Command Line Tools
-- Anahtar zincirinde `SesKopru Dev` adlı kod imzalama sertifikası
-
-## Sertifika
-
-`build.sh` uygulamayı `SesKopru Dev` sertifikasıyla imzalar. Sertifika repoda yoktur, derlemeden önce aşağıdaki yollardan biriyle hazırlanmalıdır.
-
-**Var olan sertifikayı taşımak (önerilir):** İmza makineler arasında aynı kalır.
-
-1. Sertifikanın olduğu Mac'te Anahtar Zinciri Erişimi'ni aç, `SesKopru Dev`e sağ tıkla, **Dışa Aktar** ile `.p12` olarak kaydet ve bir parola belirle.
-2. Dosyayı diğer Mac'e taşıyıp içe aktar:
-
-```bash
-security import SesKopruDev.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
-```
-
-**Yeni sertifika oluşturmak:**
-
-1. **Anahtar Zinciri Erişimi → Sertifika Asistanı → Sertifika Oluştur** yolunu izle.
-2. Ad `SesKopru Dev`, kimlik türü **Kendinden İmzalı Kök**, sertifika türü **Kod İmzalama** olsun.
+- macOS 14.4 veya üstü
+- Xcode Command Line Tools (`xcode-select --install`)
 
 ## Derleme ve kurulum
 
@@ -36,7 +17,7 @@ git clone https://github.com/atillayurtseven/SesKopru.git
 cd SesKopru && ./build.sh install
 ```
 
-Uygulama `/Applications/SesKopru.app` olarak kurulur ve başlatılır. Anahtar zinciri parola isterse **Her Zaman İzin Ver** seçilmelidir.
+Uygulama `/Applications/SesKopru.app` olarak kurulur ve başlatılır. İlk derlemede `SesKopru Dev` adlı yerel bir imza sertifikası oluşturulur. Anahtar zinciri parola isterse **Her Zaman İzin Ver** seçilmelidir.
 
 ## İzinler
 
