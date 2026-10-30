@@ -1,16 +1,16 @@
-// SesKopru — Ses seviyesi kontrolü olmayan çıkış aygıtlarına (DisplayPort/HDMI monitörler)
-// Mac'in ses tuşlarıyla birebir çalışan yazılımsal ses kontrolü ekler.
+// VolumeBridge — Adds software volume control, driven by the Mac's volume keys, to output
+// devices that have none (DisplayPort/HDMI monitors).
 //
-// Yöntem: Core Audio Process Tap ile aygıta giden ses yakalanıp susturulur,
-// kazanç uygulanarak özel bir aggregate aygıt üzerinden aynı çıkışa geri verilir.
-// Uygulama kapanır/çökerse tap yok olur ve ses kendiliğinden normale döner.
+// Method: a Core Audio Process Tap captures and mutes the audio headed to the device, then
+// a private aggregate device plays it back on the same output with gain applied.
+// If the app quits or crashes, the tap goes away and audio returns to normal by itself.
 
 import AppKit
 import CoreAudio
 import ApplicationServices
 import ServiceManagement
 
-// MARK: - Core Audio yardımcıları
+// MARK: - Core Audio helpers
 
 let systemObject = AudioObjectID(kAudioObjectSystemObject)
 
@@ -36,7 +36,7 @@ func stringProperty(_ id: AudioObjectID, _ sel: AudioObjectPropertySelector) -> 
     return v.takeRetainedValue() as String
 }
 
-/// Aygıt macOS'un kendi ses/sessiz kontrolünü sunuyor mu?
+/// Does the device offer macOS's native volume/mute control?
 func hasNativeVolume(_ id: AudioDeviceID) -> Bool {
     for el: UInt32 in [0, 1] {
         var a = addr(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput, el)
@@ -58,13 +58,13 @@ func ownProcessObject() -> AudioObjectID? {
     return obj
 }
 
-// MARK: - Ses motoru
+// MARK: - Audio engine
 
-/// Gerçek zamanlı ses iş parçacığıyla paylaşılan kazanç durumu.
+/// Gain state shared with the real-time audio thread.
 final class GainState {
     var target: Float = 1
     var current: Float = 1
-    /// Her render çağrısında artar; bekçi akışın durup durmadığını buna bakarak anlar.
+    /// Incremented on every render call; the watchdog uses it to detect a stalled stream.
     var ticks: UInt64 = 0
 }
 
@@ -84,18 +84,18 @@ final class AudioEngine {
     func start(initialGain: Float) throws {
         gain.target = initialGain
         gain.current = initialGain
-        guard let me = ownProcessObject() else { throw err("Süreç ses nesnesi alınamadı") }
+        guard let me = ownProcessObject() else { throw err("Could not get the process audio object") }
 
         let desc = CATapDescription(excludingProcesses: [me], deviceUID: deviceUID, stream: 0)
-        desc.name = "SesKopru Tap"
+        desc.name = "VolumeBridge Tap"
         desc.isPrivate = true
         desc.muteBehavior = .muted
         var status = AudioHardwareCreateProcessTap(desc, &tapID)
-        guard status == noErr else { throw err("Process tap oluşturulamadı (\(status))") }
+        guard status == noErr else { throw err("Could not create the process tap (\(status))") }
 
         let dict: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "SesKopru",
-            kAudioAggregateDeviceUIDKey: "SesKopru-\(UUID().uuidString)",
+            kAudioAggregateDeviceNameKey: "VolumeBridge",
+            kAudioAggregateDeviceUIDKey: "VolumeBridge-\(UUID().uuidString)",
             kAudioAggregateDeviceMainSubDeviceKey: deviceUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
@@ -107,7 +107,7 @@ final class AudioEngine {
             ]],
         ]
         status = AudioHardwareCreateAggregateDevice(dict as CFDictionary, &aggregateID)
-        guard status == noErr else { stop(); throw err("Aggregate aygıt oluşturulamadı (\(status))") }
+        guard status == noErr else { stop(); throw err("Could not create the aggregate device (\(status))") }
 
         var frames: UInt32 = 256
         var fa = addr(kAudioDevicePropertyBufferFrameSize)
@@ -118,9 +118,9 @@ final class AudioEngine {
             AudioEngine.render(UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData)),
                                UnsafeMutableAudioBufferListPointer(outData), gain)
         }
-        guard status == noErr else { stop(); throw err("IOProc oluşturulamadı (\(status))") }
+        guard status == noErr else { stop(); throw err("Could not create the IOProc (\(status))") }
         status = AudioDeviceStart(aggregateID, procID)
-        guard status == noErr else { stop(); throw err("Aygıt başlatılamadı (\(status))") }
+        guard status == noErr else { stop(); throw err("Could not start the device (\(status))") }
     }
 
     func stop() {
@@ -139,7 +139,7 @@ final class AudioEngine {
 
     deinit { stop() }
 
-    /// Gerçek zamanlı: bellek ayırma yok. Float32 tamponları, interleaved ya da değil, kanal kanal kopyalar.
+    /// Real-time: no allocations. Copies Float32 buffers channel by channel, interleaved or not.
     private static func render(_ input: UnsafeMutableAudioBufferListPointer,
                                _ output: UnsafeMutableAudioBufferListPointer,
                                _ g: GainState) {
@@ -157,7 +157,7 @@ final class AudioEngine {
         let inFirst = input[0]
         let inFrames = inFirst.mNumberChannels > 0 ? Int(inFirst.mDataByteSize) / (Int(inFirst.mNumberChannels) * 4) : 0
         let frames = min(outFrames, inFrames)
-        // ~2 ms'de hedefe yaklaşan yumuşak geçiş (tıklama/cızırtı önler)
+        // Smooth ~2 ms approach to the target (prevents clicks and crackle)
         let step: Float = 0.01
 
         var outChBase = 0
@@ -167,7 +167,7 @@ final class AudioEngine {
             memset(od, 0, Int(ob.mDataByteSize))
             for oc in 0..<ostride {
                 let ic = (outChBase + oc) % inChannels
-                // ic numaralı giriş kanalını bul
+                // Find input channel ic
                 var base = 0
                 var src: UnsafeMutablePointer<Float>?
                 var istride = 1
@@ -196,11 +196,11 @@ final class AudioEngine {
     }
 
     private func err(_ m: String) -> NSError {
-        NSError(domain: "SesKopru", code: 1, userInfo: [NSLocalizedDescriptionKey: m])
+        NSError(domain: "VolumeBridge", code: 1, userInfo: [NSLocalizedDescriptionKey: m])
     }
 }
 
-// MARK: - Ses göstergesi (HUD)
+// MARK: - Volume indicator (HUD)
 
 final class VolumeHUD {
     private let panel: NSPanel
@@ -218,11 +218,11 @@ final class VolumeHUD {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
-        // Cam efekti + yarı saydam siyah zemin
+        // Glass effect + translucent black background
         let content = NSView(frame: panel.contentView!.bounds)
         content.autoresizingMask = [.width, .height]
         var usesGlass = false
-#if compiler(>=6.2) // NSGlassEffectView macOS 26 SDK'sı ister
+#if compiler(>=6.2) // NSGlassEffectView requires the macOS 26 SDK
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: content.bounds)
             glass.cornerRadius = 16
@@ -304,8 +304,8 @@ func speakerSymbol(volume: Float, muted: Bool) -> String {
 
 func debugLog(_ m: String) {
     let line = "\(Date()) \(m)\n"
-    let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/SesKopru.log")
-    // 1 MB'ı geçince sıfırla
+    let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/VolumeBridge.log")
+    // Reset past 1 MB
     if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 1_000_000 {
         try? FileManager.default.removeItem(at: url)
     }
@@ -313,9 +313,9 @@ func debugLog(_ m: String) {
     else { try? line.write(to: url, atomically: true, encoding: .utf8) }
 }
 
-// MARK: - Uygulama
+// MARK: - App
 
-// IOKit/hidsystem sabitleri (ev_keymap.h)
+// IOKit/hidsystem constants (ev_keymap.h)
 let NX_KEYTYPE_SOUND_UP = 0
 let NX_KEYTYPE_SOUND_DOWN = 1
 let NX_KEYTYPE_MUTE = 7
@@ -324,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let hud = VolumeHUD()
     private var engine: AudioEngine? { didSet { tapActive = engine != nil } }
-    /// Tap iş parçacığının okuduğu kopya (ana iş parçacığını beklememek için).
+    /// Copy read by the tap thread (so it never waits on the main thread).
     private var tapActive = false
     private var deviceName = ""
     private var eventTap: CFMachPort?
@@ -349,15 +349,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         slider.action = #selector(sliderChanged)
         slider.isContinuous = true
 
-        if !defaults.bool(forKey: "loginConfigured") {
+        if !defaults.bool(forKey: "loginConfiguredV2") {
             try? SMAppService.mainApp.register()
-            defaults.set(true, forKey: "loginConfigured")
+            defaults.set(true, forKey: "loginConfiguredV2")
         }
 
         installEventTap()
         listenForAudioChanges()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            debugLog("uyanma")
+            debugLog("wake")
             self?.engine?.stop(); self?.engine = nil
             self?.scheduleReconcile(delay: 1.5)
         }
@@ -368,15 +368,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastTicks: UInt64 = 0
     private var stalls = 0
 
-    /// Uyku/uyanma ya da aygıt değişiminden sonra akış durursa motoru yeniden kurar.
+    /// Rebuilds the engine if the stream stalls after sleep/wake or a device change.
     private func startWatchdog() {
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self, let e = self.engine else { self?.lastTicks = 0; return }
             if e.ticks == self.lastTicks {
                 self.stalls += 1
-                // İlk 3 seferde hemen, sonra ~30 sn'de bir dene (ekran uykudayken döngüye girmesin)
+                // Retry immediately 3 times, then every ~30 s (avoids looping while the display sleeps)
                 guard self.stalls <= 3 || self.stalls % 10 == 0 else { return }
-                debugLog("bekçi: akış durmuş (\(self.stalls)), motor yeniden kuruluyor")
+                debugLog("watchdog: stream stalled (\(self.stalls)), rebuilding engine")
                 self.stopEngine()
                 self.lastTicks = 0
                 self.reconcile()
@@ -389,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ n: Notification) { engine?.stop() }
 
-    // MARK: Aygıt takibi
+    // MARK: Device tracking
 
     private func listenForAudioChanges() {
         for sel in [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices] {
@@ -407,18 +407,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
     }
 
-    /// Varsayılan çıkışın ses kontrolü yoksa motoru o aygıt için çalıştırır, varsa durdurur.
+    /// Runs the engine for the default output if it has no volume control; stops it otherwise.
     private func reconcile() {
         guard let dev = defaultOutputDevice(), let uid = stringProperty(dev, kAudioDevicePropertyDeviceUID) else {
             stopEngine(); updateIcon(); return
         }
-        if hasNativeVolume(dev) || uid.hasPrefix("SesKopru-") {
+        if hasNativeVolume(dev) || uid.hasPrefix("VolumeBridge-") {
             stopEngine(); updateIcon(); return
         }
         if engine?.deviceUID == uid { return }
 
         stopEngine()
-        deviceName = stringProperty(dev, kAudioObjectPropertyName) ?? "Çıkış"
+        deviceName = stringProperty(dev, kAudioObjectPropertyName) ?? "Output"
         volume = defaults.object(forKey: "vol.\(uid)") as? Float ?? 0.5
         muted = defaults.bool(forKey: "mute.\(uid)")
 
@@ -426,11 +426,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try e.start(initialGain: effectiveGain())
             engine = e
-            debugLog("motor başladı → \(deviceName)")
+            debugLog("engine started → \(deviceName)")
             lastError = nil
         } catch {
             lastError = error.localizedDescription
-            debugLog("motor hatası: \(error.localizedDescription)")
+            debugLog("engine error: \(error.localizedDescription)")
         }
         updateIcon()
     }
@@ -440,9 +440,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine = nil
     }
 
-    // MARK: Ses durumu
+    // MARK: Volume state
 
-    /// 0…1 ölçeğini algısal eğriye çevirir (genlik = v²): 0 = sessiz, 1 = 0 dB, üst kademeler yumuşak.
+    /// Maps 0…1 to a perceptual curve (amplitude = v²): 0 = silent, 1 = 0 dB, gentle top steps.
     private func effectiveGain() -> Float {
         if muted || volume <= 0 { return 0 }
         return volume * volume
@@ -460,7 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func step(_ delta: Float) {
         muted = false
-        // macOS gibi: 16 adıma yapış
+        // Like macOS: snap to 16 steps
         let q: Float = abs(delta) < 1.0 / 16 ? 64 : 16
         volume = min(1, max(0, ((volume + delta) * q).rounded() / q))
         apply(showHUD: true)
@@ -468,7 +468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateIcon() {
         let name = active ? speakerSymbol(volume: volume, muted: muted) : "speaker.fill"
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Ses")
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Volume")
         img?.isTemplate = true
         statusItem.button?.image = img
         statusItem.button?.appearsDisabled = !active
@@ -480,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         apply(showHUD: false)
     }
 
-    // MARK: Menü
+    // MARK: Menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -493,25 +493,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem()
             item.view = holder
             menu.addItem(item)
-            let m = menu.addItem(withTitle: "Sessiz", action: #selector(toggleMute), keyEquivalent: "")
+            let m = menu.addItem(withTitle: "Mute", action: #selector(toggleMute), keyEquivalent: "")
             m.target = self
             m.state = muted ? .on : .off
         } else {
-            let text = lastError.map { "Hata: \($0)" } ?? "Bu çıkışta macOS kendi ses kontrolünü kullanıyor"
+            let text = lastError.map { "Error: \($0)" } ?? "macOS handles volume on this output"
             menu.addItem(withTitle: text, action: nil, keyEquivalent: "").isEnabled = false
         }
         if !AXIsProcessTrusted() {
-            let a = menu.addItem(withTitle: "⚠︎ Ses tuşları için Erişilebilirlik izni ver…", action: #selector(openAccessibility), keyEquivalent: "")
+            let a = menu.addItem(withTitle: "⚠︎ Grant Accessibility Access for Volume Keys…", action: #selector(openAccessibility), keyEquivalent: "")
             a.target = self
         }
         menu.addItem(.separator())
-        let login = menu.addItem(withTitle: "Girişte Başlat", action: #selector(toggleLogin), keyEquivalent: "")
+        let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        let snd = menu.addItem(withTitle: "Ses Ayarları…", action: #selector(openSoundSettings), keyEquivalent: "")
+        let snd = menu.addItem(withTitle: "Sound Settings…", action: #selector(openSoundSettings), keyEquivalent: "")
         snd.target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Çıkış", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
     @objc private func toggleMute() { muted.toggle(); apply(showHUD: true) }
@@ -530,22 +530,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
-    // MARK: Ses tuşları
+    // MARK: Volume keys
 
     private var axPrompted = false
-    /// Basma olayı görülen tuşlar; görülmeyenler bırakma anında işlenir.
+    /// Keys whose press event was seen; others are handled on release.
     private var downSeen = Set<Int>()
-    /// Basılı tutulan ses tuşu için kendi tekrar zamanlayıcımız (HID seviyesinde tekrar olayı gelmiyor).
+    /// Our own repeat timer for a held volume key (repeat events are not always delivered).
     private var repeatTimer: Timer?
 
     private func installEventTap() {
         if !AXIsProcessTrusted() {
-            // Yalnızca bir kez sor; sonra sessizce izni bekle
+            // Prompt only once; then wait quietly for the grant
             if !axPrompted {
                 axPrompted = true
                 AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
             }
-            // İzin verilene kadar bekle, sonra tap'i kur
+            // Wait for the grant, then install the tap
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.installEventTap() }
             return
         }
@@ -553,20 +553,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ptr = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: mask, callback: eventTapCallback, userInfo: ptr) else {
-            debugLog("tapCreate başarısız")
+            debugLog("tapCreate failed")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.installEventTap() }
             return
         }
         eventTap = tap
-        debugLog("tap kuruldu")
-        // Tap kendi iş parçacığında: ana iş parçacığı meşgulken (motor kurulumu vb.) tuşlar gecikmesin
+        debugLog("tap installed")
+        // Tap on its own thread: keys must not lag while the main thread is busy (engine setup etc.)
         let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
         let t = Thread {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
             CFRunLoopRun()
         }
-        t.name = "SesKopru.tap"
+        t.name = "VolumeBridge.tap"
         t.qualityOfService = .userInteractive
         t.start()
         tapThread = t
@@ -576,16 +576,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startRepeat(_ delta: Float) {
         repeatTimer?.invalidate()
-        // macOS'taki gibi: kısa bekleme, sonra hızlı tekrar
+        // Like macOS: short delay, then fast repeat
         repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
             self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.07, repeats: true) { _ in self?.step(delta) }
         }
     }
 
-    /// Tap iş parçacığında çalışır: yalnızca karar verir, işi ana iş parçacığına bırakır.
+    /// Runs on the tap thread: only decides, and leaves the work to the main thread.
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            debugLog("tap devre dışı kaldı (\(type.rawValue)), yeniden açılıyor")
+            debugLog("tap disabled (\(type.rawValue)), re-enabling")
             if let t = eventTap { CGEvent.tapEnable(tap: t, enable: true) }
             return Unmanaged.passUnretained(event)
         }
@@ -599,24 +599,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let data1 = ns.data1
         let flags = ns.modifierFlags
         DispatchQueue.main.async { self.processKey(key, data1: data1, flags: flags) }
-        return nil // olayı yut: macOS'un "desteklenmiyor" göstergesi çıkmasın
+        return nil // Swallow the event so macOS doesn't show its "unsupported" indicator
     }
 
     private func processKey(_ key: Int, data1: Int, flags rawFlags: NSEvent.ModifierFlags) {
         let ns = (data1: data1, modifierFlags: rawFlags)
         let isDown = ((ns.data1 & 0xFF00) >> 8) == 0xA
-        // Bazı sistemlerde basma olayı gelmiyor; o durumda bırakmada işle
+        // Some systems don't deliver the press event; handle on release in that case
         let isRepeat = (ns.data1 & 0x1) != 0
-        if isRepeat { return } // sistem tekrarı gelirse yok say; tekrarı biz üretiyoruz
+        if isRepeat { return } // Ignore system repeats; we generate our own
         if isDown { downSeen.insert(key) }
         let fire = isDown || !downSeen.contains(key)
         if !isDown { downSeen.remove(key); repeatTimer?.invalidate(); repeatTimer = nil }
         if fire {
             let flags = ns.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.contains(.option) && !flags.contains(.shift) {
-                openSoundSettings() // macOS davranışı: ⌥ + ses tuşu → Ses ayarları
+                openSoundSettings() // macOS behavior: ⌥ + volume key → Sound settings
             } else {
-                let fine = flags.contains(.option) && flags.contains(.shift) // ⌥⇧ → ¼ adım
+                let fine = flags.contains(.option) && flags.contains(.shift) // ⌥⇧ → quarter step
                 let d: Float = fine ? 1.0 / 64 : 1.0 / 16
                 switch key {
                 case NX_KEYTYPE_SOUND_UP, NX_KEYTYPE_SOUND_DOWN:

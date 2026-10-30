@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key><string>com.atilla.seskopru</string>
-	<key>CFBundleName</key><string>SesKopru</string>
-	<key>CFBundleExecutable</key><string>SesKopru</string>
+	<key>CFBundleName</key><string>VolumeBridge</string>
+	<key>CFBundleExecutable</key><string>VolumeBridge</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>1.0</string>
 	<key>CFBundleVersion</key><string>1</string>
 	<key>LSMinimumSystemVersion</key><string>14.4</string>
 	<key>LSUIElement</key><true/>
-	<key>NSAudioCaptureUsageDescription</key><string>Ses seviyesi kontrolü olmayan monitöre giden sesi ayarlamak için sistem sesine erişim gerekir.</string>
+	<key>NSAudioCaptureUsageDescription</key><string>VolumeBridge needs access to system audio to adjust the volume of monitors that have no volume control.</string>
 </dict>
 </plist>

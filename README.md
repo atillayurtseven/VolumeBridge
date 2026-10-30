@@ -1,31 +1,46 @@
-# SesKopru
+# VolumeBridge
 
-Ses seviyesi kontrolü olmayan çıkış aygıtlarında (DisplayPort/HDMI monitörler) Mac'in ses tuşlarını çalıştıran menü çubuğu uygulaması. Sesi Core Audio Process Tap ile yakalar, kazanç uygulayıp aynı çıkışa geri verir. Sürücü veya DDC kullanmaz.
+A menu bar app that makes the Mac's volume keys work on outputs with no volume control, such as DisplayPort and HDMI monitors. It captures system audio with a Core Audio Process Tap, applies gain, and plays it back on the same output. It needs no audio driver and no DDC.
 
-## Gereksinimler
+If the app quits or crashes, audio returns to normal by itself. On outputs with native volume control, such as the built-in speakers, the app stays out of the way.
 
-- macOS 14.4 veya üstü
+## Requirements
+
+- macOS 14.4 or later
 - Xcode Command Line Tools (`xcode-select --install`)
 
-## Derleme ve kurulum
+## Build and install
 
 ```bash
-git clone https://github.com/atillayurtseven/SesKopru.git
+git clone https://github.com/atillayurtseven/VolumeBridge.git
 ```
 
 ```bash
-cd SesKopru && ./build.sh install
+cd VolumeBridge && ./build.sh install
 ```
 
-Uygulama `/Applications/SesKopru.app` olarak kurulur ve başlatılır. İlk derlemede `SesKopru Dev` adlı yerel bir imza sertifikası oluşturulur. Anahtar zinciri parola isterse **Her Zaman İzin Ver** seçilmelidir.
+This installs and launches `/Applications/VolumeBridge.app`. The first build creates a local self-signed certificate named `VolumeBridge Dev`, which keeps macOS permissions valid across rebuilds. If Keychain asks for your password, choose **Always Allow**.
 
-## İzinler
+## Permissions
 
-Her Mac'te bir kez verilir:
+Grant these once on each Mac:
 
-- **Erişilebilirlik:** Ses tuşlarını yakalamak için. Sistem Ayarları → Gizlilik ve Güvenlik → Erişilebilirlik.
-- **Sistem sesi kaydı:** Sesi işlemek için. Sorulduğunda izin verilmelidir, verilmezse ses gelmez.
+- **Accessibility**, to capture the volume keys: System Settings → Privacy & Security → Accessibility.
+- **System audio recording**, to process the audio. Allow it when prompted, or there will be no sound.
 
-## Bilinen sorun
+## Keys
 
-Dell Display and Peripheral Manager (DDPM) çalışırken ses tuşlarının basma olayları kaybolabilir ve basılı tutma çalışmayabilir. Bu durumda DDPM kapatılmalı ve giriş öğelerinden kaldırılmalıdır.
+| Keys | Action |
+|---|---|
+| Volume up / down | Change volume in 16 steps; hold to repeat |
+| Mute | Toggle mute |
+| ⌥⇧ + volume up / down | Change volume in quarter steps |
+| ⌥ + volume key | Open Sound settings |
+
+## Known issue
+
+While Dell Display and Peripheral Manager (DDPM) is running, volume key presses can get lost and holding a key may not repeat. If that happens, quit DDPM and remove it from your login items.
+
+## License
+
+[MIT](LICENSE)
